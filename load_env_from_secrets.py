@@ -6,6 +6,7 @@ import os
 import sys
 
 import boto3
+from botocore.exceptions import ClientError
 
 #make this region agnostic
 DEFAULT_KEYS = ["DB_INSTANCE_NAME"]
@@ -20,7 +21,11 @@ def _parse_args():
         )
     )
     parser.add_argument("--secret-id", required=True, help="Secrets Manager secret name or ARN")
-    parser.add_argument("--region", default="us-west-2", help="AWS region (default: us-west-2)")
+    parser.add_argument(
+        "--region",
+        default=None,
+        help="AWS region (optional; defaults to AWS config or ARN)",
+    )
     parser.add_argument(
         "--profile",
         default=None,
@@ -45,18 +50,60 @@ def _parse_args():
     return parser.parse_args()
 
 
+def _resolve_region(secret_id, region):
+    if region:
+        return region
+    if secret_id.startswith("arn:"):
+        parts = secret_id.split(":")
+        if len(parts) > 3 and parts[2] == "secretsmanager":
+            arn_region = parts[3]
+            if arn_region:
+                return arn_region
+    return None
+
+
 def _get_secret_json(secret_id, region, profile):
-    session = boto3.Session(profile_name=profile, region_name=region)
-    client = session.client("secretsmanager")
-    resp = client.get_secret_value(SecretId=secret_id)
-    if "SecretString" in resp:
-        secret_str = resp["SecretString"]
+    resolved_region = _resolve_region(secret_id, region)
+    session = (
+        boto3.Session(profile_name=profile, region_name=resolved_region)
+        if resolved_region
+        else boto3.Session(profile_name=profile)
+    )
+
+    candidate_regions = []
+    if resolved_region:
+        candidate_regions.append(resolved_region)
     else:
-        secret_str = base64.b64decode(resp["SecretBinary"]).decode("utf-8")
-    try:
-        return json.loads(secret_str)
-    except json.JSONDecodeError as exc:
-        raise ValueError("Secret is not valid JSON") from exc
+        default_region = session.region_name
+        if default_region:
+            candidate_regions.append(default_region)
+        for candidate in session.get_available_regions("secretsmanager"):
+            if candidate not in candidate_regions:
+                candidate_regions.append(candidate)
+
+    last_exc = None
+    for candidate in candidate_regions:
+        client = session.client("secretsmanager", region_name=candidate)
+        try:
+            resp = client.get_secret_value(SecretId=secret_id)
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code")
+            if error_code == "ResourceNotFoundException":
+                last_exc = exc
+                continue
+            raise
+        if "SecretString" in resp:
+            secret_str = resp["SecretString"]
+        else:
+            secret_str = base64.b64decode(resp["SecretBinary"]).decode("utf-8")
+        try:
+            return json.loads(secret_str)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Secret is not valid JSON") from exc
+
+    if last_exc:
+        raise last_exc
+    raise ValueError("Unable to resolve secret region")
 
 
 def _write_dotenv(path, values):
