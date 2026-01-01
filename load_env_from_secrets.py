@@ -8,8 +8,9 @@ import sys
 import boto3
 from botocore.exceptions import ClientError
 
-
+#make this region agnostic
 DEFAULT_KEYS = ["DB_INSTANCE_NAME"]
+
 
 
 def _parse_args():
