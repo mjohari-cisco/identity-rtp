@@ -19,7 +19,11 @@ def _parse_args():
         )
     )
     parser.add_argument("--secret-id", required=True, help="Secrets Manager secret name or ARN")
-    parser.add_argument("--region", default="us-west-2", help="AWS region (default: us-west-2)")
+    parser.add_argument(
+        "--region",
+        default=None,
+        help="AWS region (optional; defaults to AWS config or ARN)",
+    )
     parser.add_argument(
         "--profile",
         default=None,
@@ -44,8 +48,24 @@ def _parse_args():
     return parser.parse_args()
 
 
+def _resolve_region(secret_id, region):
+    if region:
+        return region
+    if secret_id.startswith("arn:"):
+        parts = secret_id.split(":")
+        if len(parts) > 3 and parts[2] == "secretsmanager":
+            arn_region = parts[3]
+            if arn_region:
+                return arn_region
+    return None
+
+
 def _get_secret_json(secret_id, region, profile):
-    session = boto3.Session(profile_name=profile, region_name=region)
+    resolved_region = _resolve_region(secret_id, region)
+    if resolved_region:
+        session = boto3.Session(profile_name=profile, region_name=resolved_region)
+    else:
+        session = boto3.Session(profile_name=profile)
     client = session.client("secretsmanager")
     resp = client.get_secret_value(SecretId=secret_id)
     if "SecretString" in resp:
