@@ -9,3 +9,4 @@ This repository provides automation scripts and tools designed to enhance system
 
 The automation framework integrates best practices in infrastructure as code (IaC), continuous integration/continuous delivery (CI/CD), and event-driven automation to deliver scalable and repeatable resiliency operations. This approach helps organizations maintain high availability and service continuity by proactively managing and orchestrating resiliency tasks with minimal human error.
 
+FT1
