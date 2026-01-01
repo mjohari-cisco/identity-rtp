@@ -6,6 +6,7 @@ import os
 import sys
 
 import boto3
+from botocore.exceptions import ClientError
 
 
 DEFAULT_KEYS = ["DB_INSTANCE_NAME"]
@@ -62,20 +63,46 @@ def _resolve_region(secret_id, region):
 
 def _get_secret_json(secret_id, region, profile):
     resolved_region = _resolve_region(secret_id, region)
+    session = (
+        boto3.Session(profile_name=profile, region_name=resolved_region)
+        if resolved_region
+        else boto3.Session(profile_name=profile)
+    )
+
+    candidate_regions = []
     if resolved_region:
-        session = boto3.Session(profile_name=profile, region_name=resolved_region)
+        candidate_regions.append(resolved_region)
     else:
-        session = boto3.Session(profile_name=profile)
-    client = session.client("secretsmanager")
-    resp = client.get_secret_value(SecretId=secret_id)
-    if "SecretString" in resp:
-        secret_str = resp["SecretString"]
-    else:
-        secret_str = base64.b64decode(resp["SecretBinary"]).decode("utf-8")
-    try:
-        return json.loads(secret_str)
-    except json.JSONDecodeError as exc:
-        raise ValueError("Secret is not valid JSON") from exc
+        default_region = session.region_name
+        if default_region:
+            candidate_regions.append(default_region)
+        for candidate in session.get_available_regions("secretsmanager"):
+            if candidate not in candidate_regions:
+                candidate_regions.append(candidate)
+
+    last_exc = None
+    for candidate in candidate_regions:
+        client = session.client("secretsmanager", region_name=candidate)
+        try:
+            resp = client.get_secret_value(SecretId=secret_id)
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code")
+            if error_code == "ResourceNotFoundException":
+                last_exc = exc
+                continue
+            raise
+        if "SecretString" in resp:
+            secret_str = resp["SecretString"]
+        else:
+            secret_str = base64.b64decode(resp["SecretBinary"]).decode("utf-8")
+        try:
+            return json.loads(secret_str)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Secret is not valid JSON") from exc
+
+    if last_exc:
+        raise last_exc
+    raise ValueError("Unable to resolve secret region")
 
 
 def _write_dotenv(path, values):
