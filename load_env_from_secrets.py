@@ -7,8 +7,9 @@ import sys
 
 import boto3
 
-
+#make this region agnostic
 DEFAULT_KEYS = ["DB_INSTANCE_NAME"]
+
 
 
 def _parse_args():
